@@ -69,10 +69,6 @@ st.markdown(
 # Sidebar
 # ---------------------------------------------------------------------------
 with st.sidebar:
-    st.image(
-        "https://www.gov.br/static/images/govbr-colorido.svg",
-        width=120,
-    )
     st.title("📅 Agendas Gov")
     st.caption("Compromissos públicos do Executivo Federal")
     st.divider()
