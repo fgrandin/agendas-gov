@@ -247,8 +247,8 @@ def tipo_icon(tipo: str) -> str:
 # ---------------------------------------------------------------------------
 # Tabs principais
 # ---------------------------------------------------------------------------
-tab_cards, tab_planilha, tab_estruturado = st.tabs(
-    ["📋 Compromissos", "📊 Planilha", "📄 Formato estruturado"]
+tab_estruturado, tab_planilha, tab_cards = st.tabs(
+    ["📄 Formato estruturado", "📊 Planilha", "📋 Compromissos"]
 )
 
 # ── Tab 1: Cards ────────────────────────────────────────────────────────────
