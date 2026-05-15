@@ -29,7 +29,7 @@ st.set_page_config(
 @st.cache_resource(show_spinner="Configurando navegador…")
 def _install_playwright_browser():
     result = subprocess.run(
-        [sys.executable, "-m", "playwright", "install", "chromium"],
+        [sys.executable, "-m", "playwright", "install", "chromium", "--with-deps"],
         capture_output=True,
         text=True,
     )
