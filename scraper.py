@@ -22,7 +22,6 @@ import json
 import logging
 import re
 import shutil
-import time
 from typing import Callable, Optional
 
 import requests
@@ -30,6 +29,8 @@ from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 
 log = logging.getLogger(__name__)
+
+MAX_CONCURRENT_PAGES = 4  # abas paralelas para buscar eventos
 
 
 def _chromium_path() -> Optional[str]:
@@ -50,7 +51,6 @@ UA = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
 
-# IDs dos órgãos no e-Agendas (descobertos via inspeção)
 ORGAOS = {
     "MME": {
         "id": 661,
@@ -161,10 +161,10 @@ def event_to_compromisso(evento: dict, autoridade: str, orgao: str, data: str) -
 
 
 # ---------------------------------------------------------------------------
-# Planalto — HTML estático
+# Planalto — HTML estático (síncrono, rodado em thread)
 # ---------------------------------------------------------------------------
 
-def scrape_planalto(autoridade: str, url_template: str, data: str) -> list:
+def _scrape_planalto_sync(autoridade: str, url_template: str, data: str) -> list:
     url = url_template.format(data=data)
     log.info("[Planalto] %s → %s", autoridade, url)
     headers = {"User-Agent": UA}
@@ -226,43 +226,53 @@ def scrape_planalto(autoridade: str, url_template: str, data: str) -> list:
     return compromissos
 
 
-async def scrape_planalto_playwright(autoridade: str, url: str, data: str) -> list:
-    """Fallback com Playwright para quando requests retorna vazio ou é bloqueado."""
+async def _scrape_planalto_playwright(autoridade: str, url: str, data: str, ctx: BrowserContext) -> list:
+    """Fallback com Playwright usando o contexto já aberto."""
     log.info("[Planalto-PW] %s via Playwright", autoridade)
     compromissos = []
-    async with async_playwright() as pw:
-        launch_kw = {"headless": True}
-        sys_chromium = _chromium_path()
-        if sys_chromium:
-            launch_kw["executable_path"] = sys_chromium
-        browser = await pw.chromium.launch(**launch_kw)
-        ctx = await browser.new_context(user_agent=UA)
-        page = await ctx.new_page()
-        try:
-            await page.goto(url, timeout=30000, wait_until="networkidle")
-            await asyncio.sleep(2)
-            soup = BeautifulSoup(await page.content(), "lxml")
-            hora_re = re.compile(r"(\d{1,2}[h:]\d{2})\s+(.+)")
-            for match in hora_re.finditer(soup.get_text(separator="\n")):
-                hora_raw, descr = match.group(1), match.group(2).strip()
-                hora = hora_raw.replace("h", ":") if "h" in hora_raw else hora_raw
-                if len(descr) > 5:
-                    compromissos.append({
-                        "autoridade": autoridade,
-                        "orgao": "Presidência da República",
-                        "data": data,
-                        "hora_inicio": hora,
-                        "hora_fim": None,
-                        "tipo": "Compromisso",
-                        "assunto": descr[:200],
-                        "local": None,
-                        "participantes": [],
-                    })
-        except Exception as exc:
-            log.error("[Planalto-PW] Erro: %s", exc)
-        finally:
-            await browser.close()
+    page = await ctx.new_page()
+    try:
+        await page.goto(url, timeout=30000, wait_until="domcontentloaded")
+        await asyncio.sleep(1)
+        soup = BeautifulSoup(await page.content(), "lxml")
+        hora_re = re.compile(r"(\d{1,2}[h:]\d{2})\s+(.+)")
+        for match in hora_re.finditer(soup.get_text(separator="\n")):
+            hora_raw, descr = match.group(1), match.group(2).strip()
+            hora = hora_raw.replace("h", ":") if "h" in hora_raw else hora_raw
+            if len(descr) > 5:
+                compromissos.append({
+                    "autoridade": autoridade,
+                    "orgao": "Presidência da República",
+                    "data": data,
+                    "hora_inicio": hora,
+                    "hora_fim": None,
+                    "tipo": "Compromisso",
+                    "assunto": descr[:200],
+                    "local": None,
+                    "participantes": [],
+                })
+    except Exception as exc:
+        log.error("[Planalto-PW] Erro: %s", exc)
+    finally:
+        await page.close()
     return compromissos
+
+
+async def _scrape_planalto_all(data: str, ctx: BrowserContext, cb: Optional[Callable]) -> list:
+    """Busca Presidente e Vice em paralelo."""
+    async def fetch(autoridade, url_tpl):
+        if cb:
+            cb(f"Buscando {autoridade} (Planalto)…")
+        url = url_tpl.format(data=data)
+        comp = await asyncio.to_thread(_scrape_planalto_sync, autoridade, url_tpl, data)
+        if not comp:
+            comp = await _scrape_planalto_playwright(autoridade, url, data, ctx)
+        return comp
+
+    results = await asyncio.gather(*[
+        fetch(aut, tpl) for aut, tpl in PLANALTO_URLS.items()
+    ])
+    return [c for batch in results for c in batch]
 
 
 # ---------------------------------------------------------------------------
@@ -285,85 +295,112 @@ async def _get_agentes(page: Page, orgao_id: int) -> list:
         return []
 
 
-async def _get_events(page: Page, token: str, pertenencia_id: int, cargo: str, data: str) -> list:
+async def _get_events_page(
+    ctx: BrowserContext,
+    sem: asyncio.Semaphore,
+    token: str,
+    pid: int,
+    cargo: str,
+    data: str,
+) -> list:
+    """Abre uma aba própria para buscar eventos de um agente (paralelo-seguro)."""
     url = (
         f"{BASE_URL}/?_token={token}"
         "&filtro_orgaos_ativos=on&filtro_cargos_ativos=on&filtro_apos_ativos=on"
         "&cargo_confianca_id=&is_cargo_vago=false"
         f"&filtro_cargo={requests.utils.quote(cargo)}"
-        f"&filtro_servidor={pertenencia_id}&tipo_filtro=ap"
+        f"&filtro_servidor={pid}&tipo_filtro=ap"
     )
-    try:
-        await page.goto(url, timeout=40000, wait_until="domcontentloaded")
-        await asyncio.sleep(2)
-        events = await page.evaluate(f"""
-            () => {{
-                try {{
-                    const s = angular.element(document.getElementById('controller')).scope();
-                    return (s.events || []).filter(e => (e.start || '').startsWith('{data}'));
-                }} catch(e) {{ return []; }}
-            }}
-        """)
-        return events if isinstance(events, list) else []
-    except Exception as exc:
-        log.error("[eAgendas] Falha agenda pid=%d: %s", pertenencia_id, exc)
+    async with sem:
+        page = await ctx.new_page()
+        try:
+            await page.goto(url, timeout=40000, wait_until="domcontentloaded")
+            await asyncio.sleep(1)
+            events = await page.evaluate(f"""
+                () => {{
+                    try {{
+                        const s = angular.element(document.getElementById('controller')).scope();
+                        return (s.events || []).filter(e => (e.start || '').startsWith('{data}'));
+                    }} catch(e) {{ return []; }}
+                }}
+            """)
+            return events if isinstance(events, list) else []
+        except Exception as exc:
+            log.error("[eAgendas] Falha agenda pid=%d: %s", pid, exc)
+            return []
+        finally:
+            await page.close()
+
+
+async def _run_eagendas(data: str, ctx: BrowserContext, cb: Optional[Callable] = None) -> list:
+    # Página base para chamar a API interna com axios (requer cookies do site)
+    page = await ctx.new_page()
+    if cb:
+        cb("Abrindo e-Agendas…")
+    await page.goto(BASE_URL, timeout=30000, wait_until="domcontentloaded")
+    await asyncio.sleep(1)
+
+    token = await page.evaluate(
+        "() => { const el = document.querySelector('input[name=\"_token\"]'); "
+        "return el ? el.value : ''; }"
+    )
+    if not token:
+        log.error("[eAgendas] CSRF token não obtido.")
+        await page.close()
         return []
 
+    # Busca agentes de todos os órgãos em paralelo (chamadas axios na mesma página)
+    if cb:
+        cb("Buscando agentes de todos os órgãos…")
+    all_agentes = await asyncio.gather(*[
+        _get_agentes(page, info["id"]) for info in ORGAOS.values()
+    ])
+    await page.close()
 
-async def _scrape_orgao(
-    page: Page,
-    token: str,
-    sigla: str,
-    orgao_info: dict,
-    data: str,
-    cb: Optional[Callable] = None,
-) -> list:
-    orgao_id = orgao_info["id"]
-    orgao_nome = orgao_info["nome"]
-    cargo_filtro = orgao_info["cargo_filtro"]
-    tipo = orgao_info["tipo"]
-
-    log.info("[eAgendas/%s] Buscando agentes...", sigla)
-    agentes = await _get_agentes(page, orgao_id)
-
-    if tipo == "ministro":
-        # Titular: cargo começa com MINISTRO, sem fecha_termino, pid mais recente
-        titulares = sorted(
-            [a for a in agentes
-             if (a.get("cargo") or "").upper().startswith(cargo_filtro)
-             and not a.get("fecha_termino")],
-            key=lambda a: a["pertenencia_id"],
-            reverse=True,
-        )
-        agentes_alvo = titulares[:1]
-    else:
-        # Diretores: cargo começa com DIRETOR, sem fecha_termino
-        agentes_alvo = [
-            a for a in agentes
-            if (a.get("cargo") or "").upper().startswith(cargo_filtro)
-            and not a.get("fecha_termino")
-        ]
-
-    log.info("[eAgendas/%s] %d agente(s) identificado(s).", sigla, len(agentes_alvo))
-
-    compromissos = []
-    for agente in agentes_alvo:
-        pid = agente["pertenencia_id"]
-        nome = agente.get("nome", "Desconhecido")
-        cargo = agente.get("cargo", "")
+    # Monta lista de trabalho: (autoridade, orgao_nome, pid, cargo, sigla)
+    work_items = []
+    for (sigla, info), agentes in zip(ORGAOS.items(), all_agentes):
+        tipo = info["tipo"]
+        orgao_nome = info["nome"]
+        cargo_filtro = info["cargo_filtro"]
 
         if tipo == "ministro":
-            autoridade = f"Ministro(a) — {orgao_nome}"
+            titulares = sorted(
+                [a for a in agentes
+                 if (a.get("cargo") or "").upper().startswith(cargo_filtro)
+                 and not a.get("fecha_termino")],
+                key=lambda a: a["pertenencia_id"],
+                reverse=True,
+            )
+            alvo = titulares[:1]
         else:
-            autoridade = f"{sigla} — {nome} ({cargo})"
+            alvo = [
+                a for a in agentes
+                if (a.get("cargo") or "").upper().startswith(cargo_filtro)
+                and not a.get("fecha_termino")
+            ]
 
+        for agente in alvo:
+            pid = agente["pertenencia_id"]
+            nome = agente.get("nome", "Desconhecido")
+            cargo = agente.get("cargo", "")
+            if tipo == "ministro":
+                autoridade = f"Ministro(a) — {orgao_nome}"
+            else:
+                autoridade = f"{sigla} — {nome} ({cargo})"
+            work_items.append((autoridade, orgao_nome, pid, cargo, sigla))
+
+    log.info("[eAgendas] %d agentes identificados no total", len(work_items))
+
+    # Busca eventos de todos os agentes em paralelo (máx MAX_CONCURRENT_PAGES abas)
+    sem = asyncio.Semaphore(MAX_CONCURRENT_PAGES)
+
+    async def fetch_one(autoridade, orgao_nome, pid, cargo, sigla):
         if cb:
-            cb(f"[{sigla}] Carregando agenda de {nome}…")
-
-        log.info("[eAgendas/%s] Agenda de %s (pid=%d)…", sigla, nome, pid)
-        events = await _get_events(page, token, pid, cargo, data)
-        log.info("[eAgendas/%s] %s: %d evento(s) em %s", sigla, nome, len(events), data)
-
+            cb(f"[{sigla}] Buscando agenda de {autoridade.split('—')[-1].strip()}…")
+        events = await _get_events_page(ctx, sem, token, pid, cargo, data)
+        log.info("[eAgendas/%s] pid=%d → %d evento(s)", sigla, pid, len(events))
+        compromissos = []
         for ev in events:
             if ev.get("tipo") == "Viagem SCDP":
                 compromissos.append({
@@ -379,49 +416,10 @@ async def _scrape_orgao(
                 })
             else:
                 compromissos.append(event_to_compromisso(ev, autoridade, orgao_nome, data))
+        return compromissos
 
-        await asyncio.sleep(1)
-
-    return compromissos
-
-
-async def _run_eagendas(data: str, cb: Optional[Callable] = None) -> list:
-    all_comp = []
-    async with async_playwright() as pw:
-        launch_kw = {"headless": True}
-        sys_chromium = _chromium_path()
-        if sys_chromium:
-            launch_kw["executable_path"] = sys_chromium
-        browser: Browser = await pw.chromium.launch(**launch_kw)
-        ctx: BrowserContext = await browser.new_context(user_agent=UA)
-        page: Page = await ctx.new_page()
-
-        if cb:
-            cb("Abrindo e-Agendas…")
-        await page.goto(BASE_URL, timeout=30000, wait_until="networkidle")
-        await asyncio.sleep(2)
-
-        token = await page.evaluate(
-            "() => { const el = document.querySelector('input[name=\"_token\"]'); "
-            "return el ? el.value : ''; }"
-        )
-        if not token:
-            log.error("[eAgendas] CSRF token não obtido.")
-            await browser.close()
-            return []
-
-        for sigla, info in ORGAOS.items():
-            if cb:
-                cb(f"Buscando {sigla}…")
-            try:
-                comp = await _scrape_orgao(page, token, sigla, info, data, cb)
-                all_comp.extend(comp)
-            except Exception as exc:
-                log.error("[eAgendas/%s] Erro: %s", sigla, exc)
-            await asyncio.sleep(1)
-
-        await browser.close()
-    return all_comp
+    results = await asyncio.gather(*[fetch_one(*item) for item in work_items])
+    return [c for batch in results for c in batch]
 
 
 # ---------------------------------------------------------------------------
@@ -435,21 +433,23 @@ def consolidate(results: list) -> list:
 
 
 async def _async_main(data: str, cb: Optional[Callable] = None) -> list:
-    all_comp = []
+    async with async_playwright() as pw:
+        launch_kw = {"headless": True}
+        sys_chromium = _chromium_path()
+        if sys_chromium:
+            launch_kw["executable_path"] = sys_chromium
+        browser: Browser = await pw.chromium.launch(**launch_kw)
+        ctx: BrowserContext = await browser.new_context(user_agent=UA)
 
-    for autoridade, url_tpl in PLANALTO_URLS.items():
-        if cb:
-            cb(f"Buscando {autoridade} (Planalto)…")
-        url = url_tpl.format(data=data)
-        time.sleep(1)
-        comp = scrape_planalto(autoridade, url_tpl, data)
-        if not comp:
-            comp = await scrape_planalto_playwright(autoridade, url, data)
-        all_comp.extend(comp)
+        # Planalto e e-Agendas rodam em paralelo
+        planalto_task = asyncio.create_task(_scrape_planalto_all(data, ctx, cb))
+        eagendas_task = asyncio.create_task(_run_eagendas(data, ctx, cb))
 
-    eagendas = await _run_eagendas(data, cb)
-    all_comp.extend(eagendas)
-    return consolidate(all_comp)
+        planalto_comp, eagendas_comp = await asyncio.gather(planalto_task, eagendas_task)
+
+        await browser.close()
+
+    return consolidate(planalto_comp + eagendas_comp)
 
 
 def run_scraper(data: Optional[str] = None, progress_callback: Optional[Callable] = None) -> list:
