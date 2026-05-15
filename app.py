@@ -4,11 +4,8 @@ app.py — Streamlit · Agendas do Governo Federal Brasileiro
 Exibe os compromissos públicos das principais autoridades do Poder Executivo.
 """
 
-import asyncio
 import datetime
 import json
-import subprocess
-import sys
 from collections import defaultdict
 
 import streamlit as st
@@ -23,24 +20,6 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ---------------------------------------------------------------------------
-# Instala o Chromium do Playwright na primeira execução (Streamlit Cloud)
-# ---------------------------------------------------------------------------
-@st.cache_resource(show_spinner="Configurando navegador…")
-def _install_playwright_browser():
-    result = subprocess.run(
-        [sys.executable, "-m", "playwright", "install", "chromium", "--with-deps"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        st.warning(f"Aviso ao instalar Chromium: {result.stderr[:300]}")
-    return True
-
-
-_install_playwright_browser()
-
-# Importa o módulo de scraping somente após garantir o browser
 from scraper import run_scraper, ORGAOS, PLANALTO_URLS
 
 # ---------------------------------------------------------------------------

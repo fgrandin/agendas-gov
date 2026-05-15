@@ -21,6 +21,7 @@ import datetime
 import json
 import logging
 import re
+import shutil
 import time
 from typing import Callable, Optional
 
@@ -29,6 +30,16 @@ from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 
 log = logging.getLogger(__name__)
+
+
+def _chromium_path() -> Optional[str]:
+    """Retorna o caminho do Chromium do sistema, se disponível (Streamlit Cloud / Debian)."""
+    for name in ("chromium", "chromium-browser", "google-chrome-stable", "google-chrome"):
+        path = shutil.which(name)
+        if path:
+            log.info("Chromium do sistema encontrado: %s", path)
+            return path
+    return None
 
 # ---------------------------------------------------------------------------
 # Constantes
@@ -220,7 +231,11 @@ async def scrape_planalto_playwright(autoridade: str, url: str, data: str) -> li
     log.info("[Planalto-PW] %s via Playwright", autoridade)
     compromissos = []
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True)
+        launch_kw = {"headless": True}
+        sys_chromium = _chromium_path()
+        if sys_chromium:
+            launch_kw["executable_path"] = sys_chromium
+        browser = await pw.chromium.launch(**launch_kw)
         ctx = await browser.new_context(user_agent=UA)
         page = await ctx.new_page()
         try:
@@ -373,7 +388,11 @@ async def _scrape_orgao(
 async def _run_eagendas(data: str, cb: Optional[Callable] = None) -> list:
     all_comp = []
     async with async_playwright() as pw:
-        browser: Browser = await pw.chromium.launch(headless=True)
+        launch_kw = {"headless": True}
+        sys_chromium = _chromium_path()
+        if sys_chromium:
+            launch_kw["executable_path"] = sys_chromium
+        browser: Browser = await pw.chromium.launch(**launch_kw)
         ctx: BrowserContext = await browser.new_context(user_agent=UA)
         page: Page = await ctx.new_page()
 
