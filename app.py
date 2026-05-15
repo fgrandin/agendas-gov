@@ -60,12 +60,7 @@ st.markdown(
         font-size: 1rem;
         font-weight: 700;
     }
-    .texto-corrido {
-        font-size: 1.05rem;
-        line-height: 1.8;
-        color: #1a1a1a;
-    }
-    </style>
+</style>
     """,
     unsafe_allow_html=True,
 )
@@ -252,8 +247,8 @@ def tipo_icon(tipo: str) -> str:
 # ---------------------------------------------------------------------------
 # Tabs principais
 # ---------------------------------------------------------------------------
-tab_cards, tab_planilha, tab_texto = st.tabs(
-    ["📋 Compromissos", "📊 Planilha", "📰 Texto corrido"]
+tab_cards, tab_planilha, tab_estruturado = st.tabs(
+    ["📋 Compromissos", "📊 Planilha", "📄 Formato estruturado"]
 )
 
 # ── Tab 1: Cards ────────────────────────────────────────────────────────────
@@ -361,107 +356,35 @@ with tab_planilha:
             use_container_width=True,
         )
 
-# ── Tab 3: Texto corrido ────────────────────────────────────────────────────
-with tab_texto:
-    st.caption(
-        "Gera um texto jornalístico corrido com base nos compromissos filtrados, "
-        "usando inteligência artificial."
+# ── Tab 3: Formato estruturado ───────────────────────────────────────────────
+with tab_estruturado:
+    linhas = []
+    for autoridade in sorted(por_aut_filtrado.keys()):
+        eventos = por_aut_filtrado[autoridade]
+        nome = eventos[0].get("nome", "") if eventos else ""
+        cabecalho = f"{autoridade}  {nome}".strip() if nome and nome != autoridade else autoridade
+        linhas.append(cabecalho)
+        for ev in eventos:
+            data_ev = ev.get("data") or ""
+            tipo = ev.get("tipo") or ""
+            hora = ev.get("hora_inicio") or ""
+            assunto = ev.get("assunto") or ""
+            local = ev.get("local") or ""
+            partic = "; ".join(ev.get("participantes") or [])
+            linha = "\t".join([data_ev, tipo, hora, assunto, local, partic])
+            linhas.append(linha)
+        linhas.append("")
+
+    texto_estruturado = "\n".join(linhas)
+
+    st.download_button(
+        label="⬇️ Baixar .txt",
+        data=texto_estruturado.encode("utf-8"),
+        file_name=f"agendas_estruturado_{data_str}.txt",
+        mime="text/plain",
     )
 
-    api_key = st.secrets.get("ANTHROPIC_API_KEY", None)
-    if not api_key:
-        st.warning(
-            "Para usar esta funcionalidade, configure o secret **ANTHROPIC_API_KEY** "
-            "nas configurações do seu app no Streamlit Cloud.",
-            icon="🔑",
-        )
-        st.stop()
-
-    gerar = st.button("✍️ Gerar texto corrido", type="primary")
-
-    if "texto_corrido" in st.session_state and st.session_state.get("texto_data") == (data_str, str(filtro_aut), str(filtro_tipo)):
-        texto_gerado = st.session_state["texto_corrido"]
-    else:
-        texto_gerado = None
-
-    if gerar:
-        dia_semana_pt = [
-            "segunda-feira", "terça-feira", "quarta-feira",
-            "quinta-feira", "sexta-feira", "sábado", "domingo"
-        ][data_sel.weekday()]
-
-        dados_resumidos = [
-            {
-                "autoridade": c.get("autoridade", ""),
-                "nome": c.get("nome", ""),
-                "orgao": c.get("orgao", ""),
-                "hora_inicio": c.get("hora_inicio") or "",
-                "tipo": c.get("tipo") or "",
-                "assunto": c.get("assunto") or "",
-                "local": c.get("local") or "",
-                "participantes": c.get("participantes") or [],
-            }
-            for c in comp_filtrados
-        ]
-
-        prompt = f"""Você é um jornalista especializado em cobertura do governo federal brasileiro, com foco em energia, economia e política. Com base nas agendas públicas abaixo, escreva um texto corrido em estilo de nota jornalística para publicação.
-
-Data de referência: {data_sel.strftime('%d/%m/%Y')} ({dia_semana_pt})
-
-Instruções:
-- Mencione o nome das autoridades (campo "nome") e seu cargo/órgão
-- Use o dia da semana por extenso quando relevante (segunda, terça, etc.)
-- Cite locais e órgãos mencionados nos eventos
-- Agrupe eventos relacionados quando dois ou mais participantes estão no mesmo evento
-- Seja conciso — 2 a 4 frases por autoridade
-- Escreva em português brasileiro, sem bullet points, em parágrafos corridos
-- Use tempo futuro para agendas futuras, passado para passadas
-- Separe cada autoridade/grupo com dois enters (parágrafo)
-- Não invente informações além do que está no JSON
-
-Agendas (JSON):
-{json.dumps(dados_resumidos, ensure_ascii=False, indent=2)}
-
-Escreva apenas o texto corrido, sem título, sem cabeçalho."""
-
-        try:
-            import anthropic
-            client = anthropic.Anthropic(api_key=api_key)
-
-            texto_placeholder = st.empty()
-            texto_acumulado = ""
-
-            with client.messages.stream(
-                model="claude-sonnet-4-6",
-                max_tokens=2000,
-                messages=[{"role": "user", "content": prompt}],
-            ) as stream:
-                for chunk in stream.text_stream:
-                    texto_acumulado += chunk
-                    texto_placeholder.markdown(
-                        f'<div class="texto-corrido">{texto_acumulado}</div>',
-                        unsafe_allow_html=True,
-                    )
-
-            texto_gerado = texto_acumulado
-            st.session_state["texto_corrido"] = texto_gerado
-            st.session_state["texto_data"] = (data_str, str(filtro_aut), str(filtro_tipo))
-
-        except Exception as exc:
-            st.error(f"Erro ao gerar texto: {exc}")
-
-    if texto_gerado:
-        st.markdown(
-            f'<div class="texto-corrido">{texto_gerado}</div>',
-            unsafe_allow_html=True,
-        )
-        st.download_button(
-            label="⬇️ Baixar texto (.txt)",
-            data=texto_gerado.encode("utf-8"),
-            file_name=f"agendas_texto_{data_str}.txt",
-            mime="text/plain",
-            use_container_width=False,
-        )
+    st.code(texto_estruturado, language=None)
 
 # ---------------------------------------------------------------------------
 # Rodapé
