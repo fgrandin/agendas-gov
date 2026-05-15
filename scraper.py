@@ -193,6 +193,7 @@ def _scrape_planalto_sync(autoridade: str, url_template: str, data: str) -> list
             if len(descr) > 5:
                 compromissos.append({
                     "autoridade": autoridade,
+                    "nome": autoridade,
                     "orgao": "Presidência da República",
                     "data": data,
                     "hora_inicio": hora,
@@ -212,6 +213,7 @@ def _scrape_planalto_sync(autoridade: str, url_template: str, data: str) -> list
         if descricao:
             compromissos.append({
                 "autoridade": autoridade,
+                "nome": autoridade,
                 "orgao": "Presidência da República",
                 "data": data,
                 "hora_inicio": hora,
@@ -242,6 +244,7 @@ async def _scrape_planalto_playwright(autoridade: str, url: str, data: str, ctx:
             if len(descr) > 5:
                 compromissos.append({
                     "autoridade": autoridade,
+                    "nome": autoridade,
                     "orgao": "Presidência da República",
                     "data": data,
                     "hora_inicio": hora,
@@ -388,16 +391,16 @@ async def _run_eagendas(data: str, ctx: BrowserContext, cb: Optional[Callable] =
                 autoridade = f"Ministro(a) — {orgao_nome}"
             else:
                 autoridade = f"{sigla} — {nome} ({cargo})"
-            work_items.append((autoridade, orgao_nome, pid, cargo, sigla))
+            work_items.append((autoridade, orgao_nome, pid, cargo, sigla, nome))
 
     log.info("[eAgendas] %d agentes identificados no total", len(work_items))
 
     # Busca eventos de todos os agentes em paralelo (máx MAX_CONCURRENT_PAGES abas)
     sem = asyncio.Semaphore(MAX_CONCURRENT_PAGES)
 
-    async def fetch_one(autoridade, orgao_nome, pid, cargo, sigla):
+    async def fetch_one(autoridade, orgao_nome, pid, cargo, sigla, nome):
         if cb:
-            cb(f"[{sigla}] Buscando agenda de {autoridade.split('—')[-1].strip()}…")
+            cb(f"[{sigla}] Buscando agenda de {nome}…")
         events = await _get_events_page(ctx, sem, token, pid, cargo, data)
         log.info("[eAgendas/%s] pid=%d → %d evento(s)", sigla, pid, len(events))
         compromissos = []
@@ -405,6 +408,7 @@ async def _run_eagendas(data: str, ctx: BrowserContext, cb: Optional[Callable] =
             if ev.get("tipo") == "Viagem SCDP":
                 compromissos.append({
                     "autoridade": autoridade,
+                    "nome": nome,
                     "orgao": orgao_nome,
                     "data": data,
                     "hora_inicio": None,
@@ -415,7 +419,9 @@ async def _run_eagendas(data: str, ctx: BrowserContext, cb: Optional[Callable] =
                     "participantes": [],
                 })
             else:
-                compromissos.append(event_to_compromisso(ev, autoridade, orgao_nome, data))
+                c = event_to_compromisso(ev, autoridade, orgao_nome, data)
+                c["nome"] = nome
+                compromissos.append(c)
         return compromissos
 
     results = await asyncio.gather(*[fetch_one(*item) for item in work_items])

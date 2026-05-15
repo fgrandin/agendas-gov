@@ -5,9 +5,11 @@ Exibe os compromissos públicos das principais autoridades do Poder Executivo.
 """
 
 import datetime
+import io
 import json
 from collections import defaultdict
 
+import pandas as pd
 import streamlit as st
 
 # ---------------------------------------------------------------------------
@@ -57,6 +59,11 @@ st.markdown(
         margin: 1.5rem 0 0.5rem 0;
         font-size: 1rem;
         font-weight: 700;
+    }
+    .texto-corrido {
+        font-size: 1.05rem;
+        line-height: 1.8;
+        color: #1a1a1a;
     }
     </style>
     """,
@@ -116,7 +123,6 @@ st.info(f"Data selecionada: **{data_br}**", icon="📆")
 # Execução do scraper
 # ---------------------------------------------------------------------------
 def _fazer_scraping(data: str):
-    """Executa o scraper e armazena o resultado no session_state."""
     mensagens = []
     log_placeholder = st.empty()
 
@@ -135,11 +141,9 @@ def _fazer_scraping(data: str):
     return compromissos
 
 
-# Dispara busca ao clicar no botão
 if buscar:
     compromissos = _fazer_scraping(data_str)
 
-# Recarrega do cache se a data ainda bate
 compromissos = None
 if (
     "compromissos" in st.session_state
@@ -156,7 +160,7 @@ if compromissos is None:
         ### Como usar
         1. Selecione a data na barra lateral (padrão: amanhã).
         2. Clique em **🔍 Buscar Agendas**.
-        3. Aguarde — a coleta demora cerca de 3-6 minutos.
+        3. Aguarde — a coleta demora cerca de 1-2 minutos.
 
         > As agendas são publicadas pelos próprios órgãos, geralmente no dia anterior
         > ou no próprio dia. Se não encontrar eventos futuros, tente novamente mais tarde.
@@ -164,7 +168,6 @@ if compromissos is None:
     )
     st.stop()
 
-# Sem compromissos
 if not compromissos:
     st.warning(
         f"⚠️ Nenhum compromisso público encontrado para **{data_sel.strftime('%d/%m/%Y')}**.\n\n"
@@ -193,26 +196,6 @@ col4.metric("Eventos / Outros", len(compromissos) - tipos_count.get("Reunião", 
 st.divider()
 
 # ---------------------------------------------------------------------------
-# Botão de download
-# ---------------------------------------------------------------------------
-col_dl, col_info = st.columns([2, 5])
-with col_dl:
-    st.download_button(
-        label="⬇️ Baixar JSON",
-        data=json.dumps(compromissos, ensure_ascii=False, indent=2),
-        file_name=f"agendas_{data_str}.json",
-        mime="application/json",
-        use_container_width=True,
-    )
-with col_info:
-    st.caption(
-        f"Arquivo `agendas_{data_str}.json` com {len(compromissos)} compromissos "
-        "em formato JSON estruturado."
-    )
-
-st.divider()
-
-# ---------------------------------------------------------------------------
 # Filtros rápidos
 # ---------------------------------------------------------------------------
 todas_autoridades = sorted(por_autoridade.keys())
@@ -234,12 +217,15 @@ with col_f2:
         placeholder="Todos os tipos",
     )
 
-# Aplica filtros
 comp_filtrados = compromissos
 if filtro_aut:
     comp_filtrados = [c for c in comp_filtrados if c["autoridade"] in filtro_aut]
 if filtro_tipo:
     comp_filtrados = [c for c in comp_filtrados if c.get("tipo") in filtro_tipo]
+
+if not comp_filtrados:
+    st.info("Nenhum compromisso encontrado com os filtros selecionados.")
+    st.stop()
 
 por_aut_filtrado = defaultdict(list)
 for c in comp_filtrados:
@@ -264,49 +250,218 @@ def tipo_icon(tipo: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Cards de compromissos
+# Tabs principais
 # ---------------------------------------------------------------------------
-if not comp_filtrados:
-    st.info("Nenhum compromisso encontrado com os filtros selecionados.")
-    st.stop()
+tab_cards, tab_planilha, tab_texto = st.tabs(
+    ["📋 Compromissos", "📊 Planilha", "📰 Texto corrido"]
+)
 
-for autoridade in sorted(por_aut_filtrado.keys()):
-    eventos = por_aut_filtrado[autoridade]
-    st.markdown(
-        f'<div class="autoridade-header">🏛️ {autoridade} &nbsp; '
-        f'<span style="font-weight:400; font-size:0.85rem;">({len(eventos)} compromisso(s))</span>'
-        f"</div>",
-        unsafe_allow_html=True,
+# ── Tab 1: Cards ────────────────────────────────────────────────────────────
+with tab_cards:
+    col_dl, col_info = st.columns([2, 5])
+    with col_dl:
+        st.download_button(
+            label="⬇️ Baixar JSON",
+            data=json.dumps(comp_filtrados, ensure_ascii=False, indent=2),
+            file_name=f"agendas_{data_str}.json",
+            mime="application/json",
+            use_container_width=True,
+        )
+    with col_info:
+        st.caption(
+            f"Arquivo `agendas_{data_str}.json` com {len(comp_filtrados)} compromisso(s)."
+        )
+
+    for autoridade in sorted(por_aut_filtrado.keys()):
+        eventos = por_aut_filtrado[autoridade]
+        st.markdown(
+            f'<div class="autoridade-header">🏛️ {autoridade} &nbsp; '
+            f'<span style="font-weight:400; font-size:0.85rem;">({len(eventos)} compromisso(s))</span>'
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+        for ev in eventos:
+            hora = ev.get("hora_inicio") or "--:--"
+            hora_fim = ev.get("hora_fim")
+            hora_str = f"{hora} – {hora_fim}" if hora_fim else hora
+            tipo = ev.get("tipo") or "Compromisso"
+            assunto = ev.get("assunto") or "(sem descrição)"
+            local = ev.get("local")
+            participantes = ev.get("participantes") or []
+
+            with st.container():
+                c1, c2, c3 = st.columns([1.2, 1.5, 6])
+                with c1:
+                    st.markdown(f"**🕐 {hora_str}**")
+                with c2:
+                    st.markdown(
+                        f'<span class="tipo-badge">{tipo_icon(tipo)} {tipo}</span>',
+                        unsafe_allow_html=True,
+                    )
+                with c3:
+                    st.markdown(f"**{assunto}**")
+                    if local:
+                        st.caption(f"📍 {local}")
+                    if participantes:
+                        with st.expander(f"👥 {len(participantes)} participante(s)"):
+                            for p in participantes:
+                                st.write(f"• {p}")
+
+        st.markdown("---")
+
+# ── Tab 2: Planilha ─────────────────────────────────────────────────────────
+with tab_planilha:
+    rows = []
+    for c in comp_filtrados:
+        rows.append({
+            "Autoridade": c.get("autoridade", ""),
+            "Nome": c.get("nome", ""),
+            "Órgão": c.get("orgao", ""),
+            "Data": c.get("data", ""),
+            "Hora início": c.get("hora_inicio") or "",
+            "Hora fim": c.get("hora_fim") or "",
+            "Tipo": c.get("tipo") or "",
+            "Assunto": c.get("assunto") or "",
+            "Local": c.get("local") or "",
+            "Participantes": "; ".join(c.get("participantes") or []),
+        })
+
+    df = pd.DataFrame(rows)
+
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Autoridade": st.column_config.TextColumn(width="medium"),
+            "Assunto": st.column_config.TextColumn(width="large"),
+            "Participantes": st.column_config.TextColumn(width="large"),
+        },
     )
 
-    for ev in eventos:
-        hora = ev.get("hora_inicio") or "--:--"
-        hora_fim = ev.get("hora_fim")
-        hora_str = f"{hora} – {hora_fim}" if hora_fim else hora
-        tipo = ev.get("tipo") or "Compromisso"
-        assunto = ev.get("assunto") or "(sem descrição)"
-        local = ev.get("local")
-        participantes = ev.get("participantes") or []
+    col_csv, col_xlsx = st.columns(2)
+    with col_csv:
+        st.download_button(
+            label="⬇️ Baixar CSV",
+            data=df.to_csv(index=False).encode("utf-8-sig"),
+            file_name=f"agendas_{data_str}.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+    with col_xlsx:
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False, sheet_name="Agendas")
+        st.download_button(
+            label="⬇️ Baixar Excel",
+            data=buf.getvalue(),
+            file_name=f"agendas_{data_str}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
 
-        with st.container():
-            c1, c2, c3 = st.columns([1.2, 1.5, 6])
-            with c1:
-                st.markdown(f"**🕐 {hora_str}**")
-            with c2:
-                st.markdown(
-                    f'<span class="tipo-badge">{tipo_icon(tipo)} {tipo}</span>',
-                    unsafe_allow_html=True,
-                )
-            with c3:
-                st.markdown(f"**{assunto}**")
-                if local:
-                    st.caption(f"📍 {local}")
-                if participantes:
-                    with st.expander(f"👥 {len(participantes)} participante(s)"):
-                        for p in participantes:
-                            st.write(f"• {p}")
+# ── Tab 3: Texto corrido ────────────────────────────────────────────────────
+with tab_texto:
+    st.caption(
+        "Gera um texto jornalístico corrido com base nos compromissos filtrados, "
+        "usando inteligência artificial."
+    )
 
-    st.markdown("---")
+    api_key = st.secrets.get("ANTHROPIC_API_KEY", None)
+    if not api_key:
+        st.warning(
+            "Para usar esta funcionalidade, configure o secret **ANTHROPIC_API_KEY** "
+            "nas configurações do seu app no Streamlit Cloud.",
+            icon="🔑",
+        )
+        st.stop()
+
+    gerar = st.button("✍️ Gerar texto corrido", type="primary")
+
+    if "texto_corrido" in st.session_state and st.session_state.get("texto_data") == (data_str, str(filtro_aut), str(filtro_tipo)):
+        texto_gerado = st.session_state["texto_corrido"]
+    else:
+        texto_gerado = None
+
+    if gerar:
+        dia_semana_pt = [
+            "segunda-feira", "terça-feira", "quarta-feira",
+            "quinta-feira", "sexta-feira", "sábado", "domingo"
+        ][data_sel.weekday()]
+
+        dados_resumidos = [
+            {
+                "autoridade": c.get("autoridade", ""),
+                "nome": c.get("nome", ""),
+                "orgao": c.get("orgao", ""),
+                "hora_inicio": c.get("hora_inicio") or "",
+                "tipo": c.get("tipo") or "",
+                "assunto": c.get("assunto") or "",
+                "local": c.get("local") or "",
+                "participantes": c.get("participantes") or [],
+            }
+            for c in comp_filtrados
+        ]
+
+        prompt = f"""Você é um jornalista especializado em cobertura do governo federal brasileiro, com foco em energia, economia e política. Com base nas agendas públicas abaixo, escreva um texto corrido em estilo de nota jornalística para publicação.
+
+Data de referência: {data_sel.strftime('%d/%m/%Y')} ({dia_semana_pt})
+
+Instruções:
+- Mencione o nome das autoridades (campo "nome") e seu cargo/órgão
+- Use o dia da semana por extenso quando relevante (segunda, terça, etc.)
+- Cite locais e órgãos mencionados nos eventos
+- Agrupe eventos relacionados quando dois ou mais participantes estão no mesmo evento
+- Seja conciso — 2 a 4 frases por autoridade
+- Escreva em português brasileiro, sem bullet points, em parágrafos corridos
+- Use tempo futuro para agendas futuras, passado para passadas
+- Separe cada autoridade/grupo com dois enters (parágrafo)
+- Não invente informações além do que está no JSON
+
+Agendas (JSON):
+{json.dumps(dados_resumidos, ensure_ascii=False, indent=2)}
+
+Escreva apenas o texto corrido, sem título, sem cabeçalho."""
+
+        try:
+            import anthropic
+            client = anthropic.Anthropic(api_key=api_key)
+
+            texto_placeholder = st.empty()
+            texto_acumulado = ""
+
+            with client.messages.stream(
+                model="claude-sonnet-4-6",
+                max_tokens=2000,
+                messages=[{"role": "user", "content": prompt}],
+            ) as stream:
+                for chunk in stream.text_stream:
+                    texto_acumulado += chunk
+                    texto_placeholder.markdown(
+                        f'<div class="texto-corrido">{texto_acumulado}</div>',
+                        unsafe_allow_html=True,
+                    )
+
+            texto_gerado = texto_acumulado
+            st.session_state["texto_corrido"] = texto_gerado
+            st.session_state["texto_data"] = (data_str, str(filtro_aut), str(filtro_tipo))
+
+        except Exception as exc:
+            st.error(f"Erro ao gerar texto: {exc}")
+
+    if texto_gerado:
+        st.markdown(
+            f'<div class="texto-corrido">{texto_gerado}</div>',
+            unsafe_allow_html=True,
+        )
+        st.download_button(
+            label="⬇️ Baixar texto (.txt)",
+            data=texto_gerado.encode("utf-8"),
+            file_name=f"agendas_texto_{data_str}.txt",
+            mime="text/plain",
+            use_container_width=False,
+        )
 
 # ---------------------------------------------------------------------------
 # Rodapé
