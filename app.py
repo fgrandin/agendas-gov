@@ -384,7 +384,12 @@ with tab_estruturado:
         mime="text/plain",
     )
 
-    st.code(texto_estruturado, language=None)
+    st.text_area(
+        label="",
+        value=texto_estruturado,
+        height=600,
+        label_visibility="collapsed",
+    )
 
 # ---------------------------------------------------------------------------
 # Rodapé
