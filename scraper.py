@@ -96,10 +96,11 @@ PLANALTO_URLS = {
         "agenda-do-presidente-da-republica-lula/"
         "agenda-do-presidente-da-republica/{data}"
     ),
-    "Vice-Presidente da República": (
-        "https://www.gov.br/planalto/pt-br/acompanhe-o-planalto/"
-        "agenda-do-vice-presidente/agenda-do-vice-presidente/{data}"
-    ),
+        "Vice-Presidente da República": (
+        "https://www.gov.br/planalto/pt-br/vice-presidencia/"
+        "agenda-vice-presidente-geraldo-alckmin/"
+        "agenda-do-vice-presidente-geraldo-alckmin/{data}"
+    ),,
 }
 
 # ---------------------------------------------------------------------------
