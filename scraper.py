@@ -96,11 +96,11 @@ PLANALTO_URLS = {
         "agenda-do-presidente-da-republica-lula/"
         "agenda-do-presidente-da-republica/{data}"
     ),
-        "Vice-Presidente da República": (
+    "Vice-Presidente da República": (
         "https://www.gov.br/planalto/pt-br/vice-presidencia/"
         "agenda-vice-presidente-geraldo-alckmin/"
         "agenda-do-vice-presidente-geraldo-alckmin/{data}"
-    ),,
+    ),
 }
 
 # ---------------------------------------------------------------------------
@@ -165,6 +165,9 @@ def event_to_compromisso(evento: dict, autoridade: str, orgao: str, data: str) -
 # Planalto — HTML estático (síncrono, rodado em thread)
 # ---------------------------------------------------------------------------
 
+_DESCR_LIXO = {"atualizado em", "publicado em", "criado em"}
+
+
 def _scrape_planalto_sync(autoridade: str, url_template: str, data: str) -> list:
     url = url_template.format(data=data)
     log.info("[Planalto] %s → %s", autoridade, url)
@@ -190,9 +193,8 @@ def _scrape_planalto_sync(autoridade: str, url_template: str, data: str) -> list
         hora_re = re.compile(r"(\d{1,2}[h:]\d{2})\s+(.+)")
         for match in hora_re.finditer(soup.get_text(separator="\n")):
             hora_raw, descr = match.group(1), match.group(2).strip()
-                        hora = hora_raw.replace("h", ":") if "h" in hora_raw else hora_raw
-                _lixo = {"atualizado em", "publicado em", "criado em"}
-            if len(descr) > 5 and descr.lower().strip() not in _lixo:
+            hora = hora_raw.replace("h", ":") if "h" in hora_raw else hora_raw
+            if len(descr) > 5 and descr.lower() not in _DESCR_LIXO:
                 compromissos.append({
                     "autoridade": autoridade,
                     "nome": autoridade,
@@ -243,8 +245,7 @@ async def _scrape_planalto_playwright(autoridade: str, url: str, data: str, ctx:
         for match in hora_re.finditer(soup.get_text(separator="\n")):
             hora_raw, descr = match.group(1), match.group(2).strip()
             hora = hora_raw.replace("h", ":") if "h" in hora_raw else hora_raw
-                        _lixo = {"atualizado em", "publicado em", "criado em"}
-            if len(descr) > 5 and descr.lower().strip() not in _lixo:
+            if len(descr) > 5 and descr.lower() not in _DESCR_LIXO:
                 compromissos.append({
                     "autoridade": autoridade,
                     "nome": autoridade,
@@ -339,7 +340,6 @@ async def _get_events_page(
 
 
 async def _run_eagendas(data: str, ctx: BrowserContext, cb: Optional[Callable] = None) -> list:
-    # Página base para chamar a API interna com axios (requer cookies do site)
     page = await ctx.new_page()
     if cb:
         cb("Abrindo e-Agendas…")
@@ -355,7 +355,6 @@ async def _run_eagendas(data: str, ctx: BrowserContext, cb: Optional[Callable] =
         await page.close()
         return []
 
-    # Busca agentes de todos os órgãos em paralelo (chamadas axios na mesma página)
     if cb:
         cb("Buscando agentes de todos os órgãos…")
     all_agentes = await asyncio.gather(*[
@@ -363,7 +362,6 @@ async def _run_eagendas(data: str, ctx: BrowserContext, cb: Optional[Callable] =
     ])
     await page.close()
 
-    # Monta lista de trabalho: (autoridade, orgao_nome, pid, cargo, sigla)
     work_items = []
     for (sigla, info), agentes in zip(ORGAOS.items(), all_agentes):
         tipo = info["tipo"]
@@ -398,7 +396,6 @@ async def _run_eagendas(data: str, ctx: BrowserContext, cb: Optional[Callable] =
 
     log.info("[eAgendas] %d agentes identificados no total", len(work_items))
 
-    # Busca eventos de todos os agentes em paralelo (máx MAX_CONCURRENT_PAGES abas)
     sem = asyncio.Semaphore(MAX_CONCURRENT_PAGES)
 
     async def fetch_one(autoridade, orgao_nome, pid, cargo, sigla, nome):
@@ -450,7 +447,6 @@ async def _async_main(data: str, cb: Optional[Callable] = None) -> list:
         browser: Browser = await pw.chromium.launch(**launch_kw)
         ctx: BrowserContext = await browser.new_context(user_agent=UA)
 
-        # Planalto e e-Agendas rodam em paralelo
         planalto_task = asyncio.create_task(_scrape_planalto_all(data, ctx, cb))
         eagendas_task = asyncio.create_task(_run_eagendas(data, ctx, cb))
 
@@ -462,16 +458,6 @@ async def _async_main(data: str, cb: Optional[Callable] = None) -> list:
 
 
 def run_scraper(data: Optional[str] = None, progress_callback: Optional[Callable] = None) -> list:
-    """
-    Ponto de entrada síncrono — compatível com Streamlit e CLI.
-
-    Args:
-        data: data no formato YYYY-MM-DD (padrão: amanhã)
-        progress_callback: função f(msg: str) chamada a cada passo
-
-    Returns:
-        Lista de dicts com compromissos
-    """
     if data is None:
         data = get_tomorrow()
     return asyncio.run(_async_main(data, progress_callback))
