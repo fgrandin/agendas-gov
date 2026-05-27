@@ -190,8 +190,8 @@ def _scrape_planalto_sync(autoridade: str, url_template: str, data: str) -> list
         hora_re = re.compile(r"(\d{1,2}[h:]\d{2})\s+(.+)")
         for match in hora_re.finditer(soup.get_text(separator="\n")):
             hora_raw, descr = match.group(1), match.group(2).strip()
-            hora = hora_raw.replace("h", ":") if "h" in hora_raw else hora_raw
-                       _lixo = {"atualizado em", "publicado em", "criado em"}
+                        hora = hora_raw.replace("h", ":") if "h" in hora_raw else hora_raw
+                _lixo = {"atualizado em", "publicado em", "criado em"}
             if len(descr) > 5 and descr.lower().strip() not in _lixo:
                 compromissos.append({
                     "autoridade": autoridade,
