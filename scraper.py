@@ -440,7 +440,15 @@ def consolidate(results: list) -> list:
 
 async def _async_main(data: str, cb: Optional[Callable] = None) -> list:
     async with async_playwright() as pw:
-        launch_kw = {"headless": True}
+        launch_kw = {
+            "headless": True,
+            "args": [
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+            ],
+        }
         sys_chromium = _chromium_path()
         if sys_chromium:
             launch_kw["executable_path"] = sys_chromium
