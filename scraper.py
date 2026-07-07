@@ -20,9 +20,16 @@ import asyncio
 import datetime
 import json
 import logging
+import os
 import re
 import shutil
 from typing import Callable, Optional
+
+# Ambientes com sandbox gVisor (ex.: Streamlit Community Cloud) não suportam a
+# syscall `rseq` usada pelo glibc recente, o que derruba o Chromium com SIGTRAP
+# logo após o fork do zygote. Precisa ser definido antes do driver do
+# Playwright ser iniciado (ele herda o ambiente do processo Python).
+os.environ.setdefault("GLIBC_TUNABLES", "glibc.pthread.rseq=0")
 
 import requests
 from bs4 import BeautifulSoup
