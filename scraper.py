@@ -49,6 +49,29 @@ def _chromium_path() -> Optional[str]:
             return path
     return None
 
+
+def _ensure_playwright_chromium() -> bool:
+    """Instala o Chromium empacotado do Playwright, se necessário.
+
+    O Chromium do apt (Debian trixie) crasha com SIGTRAP sob o sandbox gVisor
+    do Streamlit Community Cloud; o build do Playwright funciona. A chamada é
+    idempotente: se o browser já está instalado, retorna em ~1s.
+    """
+    import subprocess
+    import sys
+
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            capture_output=True, text=True, timeout=600,
+        )
+        if result.returncode == 0:
+            return True
+        log.warning("playwright install chromium falhou: %s", result.stderr[-500:])
+    except Exception as exc:
+        log.warning("playwright install chromium falhou: %s", exc)
+    return False
+
 # ---------------------------------------------------------------------------
 # Constantes
 # ---------------------------------------------------------------------------
@@ -456,10 +479,16 @@ async def _async_main(data: str, cb: Optional[Callable] = None) -> list:
                 "--disable-gpu",
             ],
         }
-        sys_chromium = _chromium_path()
-        if sys_chromium:
+        try:
+            # Preferir o Chromium empacotado do Playwright (funciona sob gVisor).
+            browser: Browser = await pw.chromium.launch(**launch_kw)
+        except Exception as exc:
+            log.warning("Chromium do Playwright falhou (%s); tentando o do sistema.", exc)
+            sys_chromium = _chromium_path()
+            if not sys_chromium:
+                raise
             launch_kw["executable_path"] = sys_chromium
-        browser: Browser = await pw.chromium.launch(**launch_kw)
+            browser = await pw.chromium.launch(**launch_kw)
         ctx: BrowserContext = await browser.new_context(user_agent=UA)
 
         planalto_task = asyncio.create_task(_scrape_planalto_all(data, ctx, cb))
@@ -475,6 +504,9 @@ async def _async_main(data: str, cb: Optional[Callable] = None) -> list:
 def run_scraper(data: Optional[str] = None, progress_callback: Optional[Callable] = None) -> list:
     if data is None:
         data = get_tomorrow()
+    if progress_callback:
+        progress_callback("Preparando o navegador…")
+    _ensure_playwright_chromium()
     return asyncio.run(_async_main(data, progress_callback))
 
 
