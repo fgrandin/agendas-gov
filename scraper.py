@@ -470,29 +470,34 @@ def consolidate(results: list) -> list:
 
 async def _async_main(data: str, cb: Optional[Callable] = None) -> list:
     async with async_playwright() as pw:
-        launch_kw = {
-            "headless": True,
-            "args": [
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-            ],
-        }
-        try:
-            # Preferir o Chromium empacotado do Playwright (funciona sob gVisor).
-            # channel="chromium" força o binário completo do Chromium (modo
-            # "new headless"), em vez do chrome-headless-shell que o Playwright
-            # usa por padrão em headless=True — na imagem atual do Streamlit
-            # Cloud esse binário não encontra libglib-2.0.so.0.
-            browser: Browser = await pw.chromium.launch(channel="chromium", **launch_kw)
-        except Exception as exc:
-            log.warning("Chromium do Playwright falhou (%s); tentando o do sistema.", exc)
-            sys_chromium = _chromium_path()
-            if not sys_chromium:
-                raise
-            launch_kw["executable_path"] = sys_chromium
-            browser = await pw.chromium.launch(**launch_kw)
+        browserless_ws = os.environ.get("BROWSERLESS_WS_ENDPOINT")
+        if browserless_ws:
+            # Streamlit Cloud não consegue rodar Chromium local (falta
+            # libglib-2.0.so.0 na imagem e o apt do ambiente está quebrado
+            # há meses — ver histórico). Usamos um Chromium remoto gerenciado
+            # (Browserless) via CDP em vez de dar launch local.
+            log.info("Conectando ao Chromium remoto (Browserless).")
+            browser: Browser = await pw.chromium.connect_over_cdp(browserless_ws)
+        else:
+            launch_kw = {
+                "headless": True,
+                "args": [
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                ],
+            }
+            try:
+                # Preferir o Chromium empacotado do Playwright (funciona sob gVisor).
+                browser = await pw.chromium.launch(channel="chromium", **launch_kw)
+            except Exception as exc:
+                log.warning("Chromium do Playwright falhou (%s); tentando o do sistema.", exc)
+                sys_chromium = _chromium_path()
+                if not sys_chromium:
+                    raise
+                launch_kw["executable_path"] = sys_chromium
+                browser = await pw.chromium.launch(**launch_kw)
         ctx: BrowserContext = await browser.new_context(user_agent=UA)
 
         planalto_task = asyncio.create_task(_scrape_planalto_all(data, ctx, cb))
@@ -510,7 +515,8 @@ def run_scraper(data: Optional[str] = None, progress_callback: Optional[Callable
         data = get_tomorrow()
     if progress_callback:
         progress_callback("Preparando o navegador…")
-    _ensure_playwright_chromium()
+    if not os.environ.get("BROWSERLESS_WS_ENDPOINT"):
+        _ensure_playwright_chromium()
     return asyncio.run(_async_main(data, progress_callback))
 
 
