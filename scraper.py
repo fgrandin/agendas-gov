@@ -124,12 +124,12 @@ PLANALTO_URLS = {
     "Presidente da República": (
         "https://www.gov.br/planalto/pt-br/acompanhe-o-planalto/"
         "agenda-do-presidente-da-republica-lula/"
-        "agenda-do-presidente-da-republica/{data}"
+        "agenda-do-presidente-da-republica/json/{data}"
     ),
     "Vice-Presidente da República": (
         "https://www.gov.br/planalto/pt-br/vice-presidencia/"
         "agenda-vice-presidente-geraldo-alckmin/"
-        "agenda-do-vice-presidente-geraldo-alckmin/{data}"
+        "agenda-do-vice-presidente-geraldo-alckmin/json/{data}"
     ),
 }
 
@@ -198,7 +198,17 @@ def event_to_compromisso(evento: dict, autoridade: str, orgao: str, data: str) -
 _DESCR_LIXO = {"atualizado em", "publicado em", "criado em"}
 
 
-def _scrape_planalto_sync(autoridade: str, url_template: str, data: str) -> list:
+def _scrape_planalto_sync(autoridade: str, url_template: str, data: str) -> Optional[list]:
+    """Consome a API JSON do calendário de agenda do Planalto.
+
+    O site trocou a página estática por dia por um calendário em JS que busca
+    os compromissos em .../agenda-do-.../json/{data}, retornando a semana
+    inteira com o dia pedido marcado como "isSelected".
+
+    Retorna None se a requisição falhou (para o chamador decidir se tenta o
+    fallback via Playwright) — uma lista vazia é uma resposta válida (dia sem
+    compromissos), não deve disparar fallback.
+    """
     url = url_template.format(data=data)
     log.info("[Planalto] %s → %s", autoridade, url)
     headers = {"User-Agent": UA}
@@ -207,56 +217,28 @@ def _scrape_planalto_sync(autoridade: str, url_template: str, data: str) -> list
     try:
         resp = requests.get(url, headers=headers, timeout=30)
         resp.raise_for_status()
+        dias = resp.json()
     except Exception as exc:
         log.warning("[Planalto] %s indisponível (%s)", autoridade, exc)
+        return None
+
+    dia = next((d for d in dias if d.get("isSelected")), None)
+    if not dia:
         return []
 
-    soup = BeautifulSoup(resp.text, "lxml")
-    itens = (
-        soup.select("article.tileItem")
-        or soup.select(".compromisso")
-        or soup.select(".agenda-item")
-        or soup.select("li.item")
-    )
-
-    if not itens:
-        hora_re = re.compile(r"(\d{1,2}[h:]\d{2})\s+(.+)")
-        for match in hora_re.finditer(soup.get_text(separator="\n")):
-            hora_raw, descr = match.group(1), match.group(2).strip()
-            hora = hora_raw.replace("h", ":") if "h" in hora_raw else hora_raw
-            if len(descr) > 5 and descr.lower() not in _DESCR_LIXO:
-                compromissos.append({
-                    "autoridade": autoridade,
-                    "nome": autoridade,
-                    "orgao": "Presidência da República",
-                    "data": data,
-                    "hora_inicio": hora,
-                    "hora_fim": None,
-                    "tipo": "Compromisso",
-                    "assunto": descr[:200],
-                    "local": None,
-                    "participantes": [],
-                })
-        return compromissos
-
-    for item in itens:
-        texto = item.get_text(separator=" ", strip=True)
-        hora_match = re.search(r"(\d{1,2}[h:]\d{2})", texto)
-        hora = hora_match.group(1).replace("h", ":") if hora_match else None
-        descricao = re.sub(r"\d{1,2}[h:]\d{2}\s*", "", texto).strip()
-        if descricao:
-            compromissos.append({
-                "autoridade": autoridade,
-                "nome": autoridade,
-                "orgao": "Presidência da República",
-                "data": data,
-                "hora_inicio": hora,
-                "hora_fim": None,
-                "tipo": "Compromisso",
-                "assunto": descricao[:300],
-                "local": None,
-                "participantes": [],
-            })
+    for item in dia.get("items", []):
+        compromissos.append({
+            "autoridade": autoridade,
+            "nome": autoridade,
+            "orgao": "Presidência da República",
+            "data": data,
+            "hora_inicio": parse_hora(item.get("datetime")) or item.get("start"),
+            "hora_fim": None,
+            "tipo": "Compromisso",
+            "assunto": (item.get("title") or "")[:300],
+            "local": item.get("location"),
+            "participantes": [],
+        })
 
     log.info("[Planalto] %s: %d compromisso(s)", autoridade, len(compromissos))
     return compromissos
@@ -300,10 +282,11 @@ async def _scrape_planalto_all(data: str, ctx: BrowserContext, cb: Optional[Call
     async def fetch(autoridade, url_tpl):
         if cb:
             cb(f"Buscando {autoridade} (Planalto)…")
-        url = url_tpl.format(data=data)
         comp = await asyncio.to_thread(_scrape_planalto_sync, autoridade, url_tpl, data)
-        if not comp:
-            comp = await _scrape_planalto_playwright(autoridade, url, data, ctx)
+        if comp is None:
+            # Fallback tenta a página HTML do calendário (não o endpoint /json/).
+            html_url = url_tpl.replace("/json/{data}", "/{data}").format(data=data)
+            comp = await _scrape_planalto_playwright(autoridade, html_url, data, ctx)
         return comp
 
     results = await asyncio.gather(*[
