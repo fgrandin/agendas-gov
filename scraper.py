@@ -481,7 +481,11 @@ async def _async_main(data: str, cb: Optional[Callable] = None) -> list:
         }
         try:
             # Preferir o Chromium empacotado do Playwright (funciona sob gVisor).
-            browser: Browser = await pw.chromium.launch(**launch_kw)
+            # channel="chromium" força o binário completo do Chromium (modo
+            # "new headless"), em vez do chrome-headless-shell que o Playwright
+            # usa por padrão em headless=True — na imagem atual do Streamlit
+            # Cloud esse binário não encontra libglib-2.0.so.0.
+            browser: Browser = await pw.chromium.launch(channel="chromium", **launch_kw)
         except Exception as exc:
             log.warning("Chromium do Playwright falhou (%s); tentando o do sistema.", exc)
             sys_chromium = _chromium_path()
